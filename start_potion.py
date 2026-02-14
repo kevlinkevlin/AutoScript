@@ -8,8 +8,9 @@ import numpy as np
 from maplestory_define import find_maplestory_window
 
 def auto_use_potion(region):
-    HP_RATIO = 0.1
-    MP_RATIO = 0.8
+    HP_RATIO, MP_RATIO = 0.8, 0.05
+    # HP_RATIO, MP_RATIO = 0.4, 0.5
+
     pill_timer = time.time()
     skill_timer = time.time()
 
@@ -23,7 +24,7 @@ def auto_use_potion(region):
     region = (x + int(ratio_x * w), y + int(ratio_y * h), int(ratio_w * w), int(ratio_h * h))
 
     # keypress_loop(keys=['d', 'f', 'g', 'h'])
-    keypress_loop(keys=['c'])
+    # keypress_loop(keys=['c'])
     while True:
         # OCR 辨識
         result = cv_capture(region=region, reader=reader, result_name="health.png")
@@ -44,9 +45,10 @@ def auto_use_potion(region):
                     if ratio < HP_RATIO and float(total) < 28000.0 and float(total) > 50.0:
                         print("自動補HP")
                         keyboard.press_and_release('end')
+                        # keyboard.press_and_release('pagedown')
                 if ind == 1:
                     # print(f"MP: {left}/{total} = {ratio}")
-                    if ratio < MP_RATIO and float(total) < 28000.0 and float(total) > 3000.0:
+                    if ratio < MP_RATIO and float(total) < 28000.0 and float(total) > 40.0:
                         print("自動補MP")
                         keyboard.press_and_release('pagedown')
             else:
@@ -56,7 +58,7 @@ def auto_use_potion(region):
 
         end = time.time()
         # pill_timer = keypress_loop(keys=['d', 'f', 'g', 'h'], last_time=pill_timer,loop_time=540, first=False)
-        skill_timer = keypress_loop(keys=['c'], last_time=skill_timer,loop_time=20, first=False)
+        # skill_timer = keypress_loop(keys=['c'], last_time=skill_timer,loop_time=20, first=False)
 
 def cv_capture(region, reader, result_name):
     screenshot = pyautogui.screenshot(region=region)

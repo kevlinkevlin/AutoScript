@@ -11,8 +11,8 @@ import threading
 clicking = False
 stop_event = threading.Event()
 original_pos = pyautogui.position()
-TARGET_PRICE = 510023
-LOOP_DELAY = 60
+TARGET_PRICE = 550000
+LOOP_DELAY = 5
 NUMBER_IN_AUCTION = 7
 
 def start_auction(game_region):
@@ -52,12 +52,12 @@ def start_auction(game_region):
         for ind, (box, text, conf) in enumerate(result):
             match = re.search(r'(\d{1,3}(?:,\d{3})+|\d+)', text)
 
-            if LOOP_DELAY and (ind % 2 == 0):
+            if (ind % 2 == 0):
                 # print(f"OCR：{text}（信心={conf:.2f}）")
                 value = int(match.group(1).replace(',', ''))
 
                 # 目標價
-                if value < TARGET_PRICE:
+                if value <= TARGET_PRICE:
                     index = ind // 2
                     item_height = (price_region[3] / 7)
                     item_height_half = item_height / 2
@@ -70,10 +70,10 @@ def start_auction(game_region):
                     pyautogui.mouseUp()
                     pyautogui.mouseDown(target_x, target_y)
                     pyautogui.mouseUp()
-                    time.sleep(0.5)
+                    time.sleep(0.2)
                     # 點擊 max
-                    pyautogui.mouseDown(game_region[0] + game_region[2] * 0.46, game_region[1] + game_region[3] * 0.47 + item_height * index)
-                    pyautogui.mouseUp()
+                    # pyautogui.mouseDown(game_region[0] + game_region[2] * 0.46, game_region[1] + game_region[3] * 0.47 + item_height * index)
+                    # pyautogui.mouseUp()
                     # 購買
                     keyboard.press_and_release('enter')
                     resume_click()
