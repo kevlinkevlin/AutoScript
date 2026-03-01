@@ -8,8 +8,10 @@ import numpy as np
 from maplestory_define import find_maplestory_window
 
 def auto_use_potion(region):
-    HP_RATIO, MP_RATIO = 0.8, 0.05
-    # HP_RATIO, MP_RATIO = 0.4, 0.5
+    # HP_RATIO, MP_RATIO = 0.8, 0.4
+    HP_RATIO, MP_RATIO = 0.3, 0.4
+    HP_KEY, MP_KEY = "pagedown", "pagedown"
+    # HP_KEY, MP_KEY = "end", "pagedown"
 
     pill_timer = time.time()
     skill_timer = time.time()
@@ -22,6 +24,7 @@ def auto_use_potion(region):
     x, y, w, h = region
     ratio_x, ratio_y, ratio_w, ratio_h = 0.266, 0.934, 0.22, 0.029
     region = (x + int(ratio_x * w), y + int(ratio_y * h), int(ratio_w * w), int(ratio_h * h))
+    HP_count, MP_count = 0, 0
 
     # keypress_loop(keys=['d', 'f', 'g', 'h'])
     # keypress_loop(keys=['c'])
@@ -43,14 +46,15 @@ def auto_use_potion(region):
                 if ind == 0:
                     # print(f"HP: {left}/{total} = {ratio}")
                     if ratio < HP_RATIO and float(total) < 28000.0 and float(total) > 50.0:
-                        print("自動補HP")
-                        keyboard.press_and_release('end')
-                        # keyboard.press_and_release('pagedown')
+                        HP_count += 1
+                        print(f"自動補HP, 已消耗 {HP_count} 個")
+                        keyboard.press_and_release(HP_KEY)
                 if ind == 1:
                     # print(f"MP: {left}/{total} = {ratio}")
                     if ratio < MP_RATIO and float(total) < 28000.0 and float(total) > 40.0:
-                        print("自動補MP")
-                        keyboard.press_and_release('pagedown')
+                        MP_count += 1
+                        print(f"自動補MP, 已消耗 {MP_count} 個")
+                        keyboard.press_and_release(MP_KEY)
             else:
                 print(f"OCR：{text}（信心={conf:.2f}）")
         # print("-----")
