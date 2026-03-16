@@ -35,11 +35,14 @@ RATIO_PATTERN = re.compile(r"[\[\(]\s*(\d+)\s*/\s*(\d+)\s*[\]\)]")
 @dataclass
 class MonitorConfig:
     hp_key: str = "pagedown"
+    # hp_key: str = "pageup"
     mp_key: str = "pagedown"
+    use_super_potion: bool = True
+    super_potion_key: str = "end"
 
     # Thresholds (提示用，不做自動按鍵)
     hp_ratio: float = 0.80
-    mp_ratio: float = 0.40
+    mp_ratio: float = 0.28
 
     # Filtering (避免 OCR 垃圾值)
     total_min_hp: float = 50.0
@@ -161,13 +164,19 @@ class OCRMonitorWorker(threading.Thread):
                         self._hp_alert_count += 1
                         hp_alert = True
                         keyboard.press_and_release(self.cfg.hp_key)
+                        time.sleep(0.2)
 
                 if mp is not None:
                     left, total, ratio, text, conf = mp
                     if (ratio < self.cfg.mp_ratio and self.cfg.total_min_mp < total < self.cfg.total_max):
                         self._mp_alert_count += 1
                         mp_alert = True
-                        keyboard.press_and_release(self.cfg.mp_key)
+
+                        if self.cfg.use_super_potion == True:
+                            keyboard.press_and_release(self.cfg.super_potion_key)
+                        else:
+                            keyboard.press_and_release(self.cfg.mp_key)
+                        time.sleep(0.2)
 
                 self.status_q.put(
                     {
