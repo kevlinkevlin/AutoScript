@@ -12,9 +12,9 @@ import shutil
 clicking = False
 stop_event = threading.Event()
 original_pos = pyautogui.position()
-TARGET_PRICE = 30099999
-MINIMUM_PRICE = 500000
-LOOP_DELAY = 5
+TARGET_PRICE = 8000000
+MINIMUM_PRICE = 1
+LOOP_DELAY = 30
 NUMBER_IN_AUCTION = 7
 
 def start_auction(game_region):
@@ -30,11 +30,12 @@ def start_auction(game_region):
 
     while True:
         if not clicking:
-            print("wating.....")
+            print("waiting.....")
             time.sleep(1)
             continue
 
-        refresh_auction(game_region)
+        # refresh_auction(game_region)
+        refresh_auction_click_search(game_region)
 
         # OCR 辨識
         result = cv_capture(price_region, reader, "auction.png")
@@ -62,14 +63,18 @@ def start_auction(game_region):
                 # print(f"OCR：{text}（信心={conf:.2f}）")
                 value = int(match.group(1).replace(',', ''))
                 index = ind // 2
+                item_height = (price_region[3] / 7)
+                item_height_half = item_height / 2
+                target_x, target_y = price_region[0], price_region[1] + item_height * index + item_height_half
+                # pyautogui.mouseDown(target_x, target_y)
+                # pyautogui.mouseUp()
+
                 print(f"第 {index + 1}/{NUMBER_IN_AUCTION} 項價錢是 {value}")
+
                 # 目標價
                 if value <= TARGET_PRICE:
-                    item_height = (price_region[3] / 7)
-                    item_height_half = item_height / 2
-                    target_x, target_y = price_region[0], price_region[1] + item_height * index + item_height_half
                     print(f"第 {index + 1}/{NUMBER_IN_AUCTION} 項價錢是 {value}")
-                    shutil.copyfile("auction.png", f"buy_target_{time.time()}.png")
+                    shutil.copyfile("auction.png", f"buy_target_{value}_{time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime(time.time()))}.png")
 
                     if(value <= MINIMUM_PRICE):
                         print(f"低於保護價格 {MINIMUM_PRICE}，先不購買")
@@ -111,6 +116,15 @@ def refresh_auction(game_region):
     pyautogui.mouseDown(x + int(ratio_x * w), y + int(ratio_y * h))
     pyautogui.mouseUp()
     keyboard.press_and_release('enter')
+    resume_click()
+    time.sleep(1.0)
+
+def refresh_auction_click_search(game_region):
+    ratio_x, ratio_y = 0.25, 0.68
+    x, y, w, h = game_region
+    start_click()
+    pyautogui.mouseDown(x + int(ratio_x * w), y + int(ratio_y * h))
+    pyautogui.mouseUp()
     resume_click()
     time.sleep(1.0)
 

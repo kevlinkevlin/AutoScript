@@ -37,7 +37,7 @@ class MonitorConfig:
     hp_key: str = "pagedown"
     # hp_key: str = "pageup"
     mp_key: str = "pagedown"
-    use_super_potion: bool = True
+    use_super_potion: bool = False
     super_potion_key: str = "end"
 
     # Thresholds (提示用，不做自動按鍵)
