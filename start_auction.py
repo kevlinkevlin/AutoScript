@@ -14,7 +14,7 @@ stop_event = threading.Event()
 original_pos = pyautogui.position()
 TARGET_PRICE = 8000000
 MINIMUM_PRICE = 1
-LOOP_DELAY = 30
+LOOP_DELAY = 20
 NUMBER_IN_AUCTION = 7
 
 def start_auction(game_region):
@@ -33,6 +33,9 @@ def start_auction(game_region):
             print("waiting.....")
             time.sleep(1)
             continue
+
+        target_x, target_y = game_region[0]+10, game_region[1]+10
+        pyautogui.moveTo(target_x, target_y)
 
         # refresh_auction(game_region)
         refresh_auction_click_search(game_region)
