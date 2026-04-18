@@ -11,9 +11,10 @@ node_modules/
 .DS_Store
 Thumbs.db
 
-# Ignore build/dist folders
+# Ignore build/dist/image folders
 dist/
 build/
+image/
 
 # Ignore IDE/editor folders
 .vscode/
