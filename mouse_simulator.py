@@ -50,5 +50,6 @@ def click_at(x, y):
     ctypes.windll.user32.SendInput(1, ctypes.byref(input_up), ctypes.sizeof(INPUT))
 
 
-time.sleep(1)  # 有一秒可以移開滑鼠
-click_at(100, 200)
+if __name__ == '__main__':
+    time.sleep(1)  # 有一秒可以移開滑鼠
+    click_at(100, 200)

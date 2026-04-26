@@ -5,9 +5,9 @@ import keyboard
 import easyocr
 import pyautogui
 import numpy as np
-from maplestory_define import find_maplestory_window
-import threading
 import shutil
+import threading
+from maplestory_define import find_maplestory_window
 
 clicking = False
 stop_event = threading.Event()
@@ -15,12 +15,13 @@ original_pos = pyautogui.position()
 SINGLE_MODE, TOTAL_MODE = "Single", "Total"
 CLICK_SEARCH, CLICK_TOP_LEFT = "ClickSearch", "ClickTopLeft"
 
-TARGET_PRICE = 3600
+TARGET_PRICE = 4800000
 MINIMUM_PRICE = 1
-LOOP_DELAY = 2
+LOOP_DELAY = 45
 NUMBER_IN_AUCTION = 7
-MODE = SINGLE_MODE # SINGLE_MODE: 單價，TOTAL_MODE: 總價
-REFRESH_METHOD = CLICK_TOP_LEFT # CLICK_SEARCH: 點擊搜尋按鈕刷新，CLICK_TOP_LEFT: 點擊拍賣左上角刷新
+MODE = TOTAL_MODE        # SINGLE_MODE: 單價， TOTAL_MODE: 總價
+REFRESH_METHOD = CLICK_SEARCH  # CLICK_SEARCH: 點搜尋刷新， CLICK_TOP_LEFT: 點左上角刷新
+
 
 def start_auction(game_region):
     global clicking, stop_event
@@ -28,44 +29,38 @@ def start_auction(game_region):
     print("開始搶購!!!!!!!!!!!")
 
     x, y, w, h = game_region
-    # ratio_x, ratio_y, ratio_w, ratio_h = 0.36, 0.25, 0.55, 0.62
 
     if MODE == SINGLE_MODE:
-        ratio_x, ratio_y, ratio_w, ratio_h = 0.68, 0.25, 0.11, 0.62 # 單價區域
+        ratio_x, ratio_y, ratio_w, ratio_h = 0.68, 0.25, 0.11, 0.62
     else:
-        ratio_x, ratio_y, ratio_w, ratio_h = 0.56, 0.25, 0.11, 0.62 # 總價區域
+        ratio_x, ratio_y, ratio_w, ratio_h = 0.56, 0.25, 0.11, 0.62
 
     price_region = (x + int(ratio_x * w), y + int(ratio_y * h), int(ratio_w * w), int(ratio_h * h))
 
     while True:
         if not clicking:
-            print("waiting.....")
+            print("waiting...")
             time.sleep(1)
             continue
 
-        target_x, target_y = game_region[0]+10, game_region[1]+10
-        pyautogui.moveTo(target_x, target_y)
+        pyautogui.moveTo(game_region[0] + 10, game_region[1] + 10)
 
         if REFRESH_METHOD == CLICK_TOP_LEFT:
             refresh_auction(game_region)
         elif REFRESH_METHOD == CLICK_SEARCH:
             refresh_auction_click_search(game_region)
 
-        time.sleep(0.4)
+        time.sleep(0.5)
 
-        # OCR 辨識
-        result = cv_capture(price_region, reader, "auction.png")
+        result = cv_capture(price_region, reader)
 
         if (len(result) // 2) != NUMBER_IN_AUCTION:
             print("找不到價錢，重新進入拍賣")
-
-            target_x, target_y = game_region[0] + game_region[2] * 0.85, game_region[1] + game_region[3] * 0.95
-
+            target_x = game_region[0] + game_region[2] * 0.85
+            target_y = game_region[1] + game_region[3] * 0.95
             start_click()
-            # 進入拍賣
             pyautogui.click(target_x, target_y)
             time.sleep(2.0)
-            # 多點一次 enter 避免進入失敗
             keyboard.press_and_release('enter')
             resume_click()
             continue
@@ -73,32 +68,26 @@ def start_auction(game_region):
         for ind, (box, text, conf) in enumerate(result):
             match = re.search(r'(\d{1,3}(?:,\d{3})+|\d+)', text)
 
-            if match == None:
+            if match is None:
                 print(f"re.search 結果錯誤 {match}")
                 continue
-            if (ind % 2 == 0):
-                # print(f"OCR：{text}（信心={conf:.2f}）")
+            if ind % 2 == 0:
                 value = int(match.group(1).replace(',', ''))
                 index = ind // 2
-                item_height = (price_region[3] / 7)
-                item_height_half = item_height / 2
-                target_x, target_y = price_region[0], price_region[1] + item_height * index + item_height_half
-                # pyautogui.mouseDown(target_x, target_y)
-                # pyautogui.mouseUp()
-
+                item_height = price_region[3] / 7
+                target_x = price_region[0]
+                target_y = price_region[1] + item_height * index + item_height / 2
                 print(f"第 {index + 1}/{NUMBER_IN_AUCTION} 項價錢是 {value}")
 
-                # 目標價
                 if value <= TARGET_PRICE:
-                    print(f"第 {index + 1}/{NUMBER_IN_AUCTION} 項價錢是 {value}")
-                    shutil.copyfile("auction.png", f"./image/buy_target_{value}_{time.strftime('%Y-%m-%d_%H-%M-%S', time.localtime(time.time()))}.png")
+                    shutil.copyfile("auction.png", f"./image/buy_target_{value}_{time.strftime('%Y-%m-%d_%H-%M-%S')}.png")
 
-                    if(value <= MINIMUM_PRICE):
+                    if value <= MINIMUM_PRICE:
                         print(f"低於保護價格 {MINIMUM_PRICE}，先不購買")
                         continue
 
-                    # 雙擊
                     start_click()
+                    # pyautogui.doubleClick(target_x, target_y)
                     pyautogui.mouseDown(target_x, target_y)
                     pyautogui.mouseUp()
                     pyautogui.mouseDown(target_x, target_y)
@@ -106,21 +95,18 @@ def start_auction(game_region):
                     time.sleep(0.2)
 
                     if MODE == SINGLE_MODE:
-                        # 點擊 max
-                        pyautogui.mouseDown(game_region[0] + game_region[2] * 0.46, game_region[1] + game_region[3] * 0.47)
-                        pyautogui.mouseUp()
+                        pyautogui.click(game_region[0] + game_region[2] * 0.46, game_region[1] + game_region[3] * 0.47)
 
-                    # 購買
-                    # keyboard.press_and_release('enter')
+                    keyboard.press_and_release('enter')
                     resume_click()
                     break
 
         print(f"暫停 {LOOP_DELAY} 秒")
         time.sleep(LOOP_DELAY)
 
+
 def toggle_clicking():
-    global clicking
-    global stop_event
+    global clicking, stop_event
     clicking = not clicking
 
     if clicking:
@@ -130,52 +116,47 @@ def toggle_clicking():
         print("🔴 自動點擊停止")
         stop_event.set()
 
+
 def refresh_auction(game_region):
-    ratio_x, ratio_y = 0.2, 0.05
     x, y, w, h = game_region
     start_click()
-    pyautogui.mouseDown(x + int(ratio_x * w), y + int(ratio_y * h))
-    pyautogui.mouseUp()
+    pyautogui.click(x + int(0.2 * w), y + int(0.05 * h))
     keyboard.press_and_release('enter')
     resume_click()
 
+
 def refresh_auction_click_search(game_region):
-    ratio_x, ratio_y = 0.25, 0.68
     x, y, w, h = game_region
     start_click()
-    pyautogui.mouseDown(x + int(ratio_x * w), y + int(ratio_y * h))
-    pyautogui.mouseUp()
+    pyautogui.click(x + int(0.25 * w), y + int(0.68 * h))
     resume_click()
+
 
 def start_click():
     global original_pos
     original_pos = pyautogui.position()
 
+
 def resume_click():
-    global original_pos
     pyautogui.moveTo(original_pos)
 
-def cv_capture(region, reader, result_name):
+
+def cv_capture(region, reader):
     screenshot = pyautogui.screenshot(region=region)
-    # screenshot = Image.open("image.png")
-
-    img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
-
-    # gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
+    img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
     resized = cv2.resize(img, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-
     _, binary = cv2.threshold(resized, 150, 255, cv2.THRESH_BINARY)
 
-    cv2.imwrite(result_name, binary)
+    # cv2.imwrite("auction.png",binary)
 
     return reader.readtext(binary)
 
-# 綁定熱鍵
+
 keyboard.add_hotkey('F8', toggle_clicking)
 keyboard.add_hotkey('=', toggle_clicking)
 print("✅ 請使用 F8 開/關自動點擊，ESC 離開")
 
 if __name__ == '__main__':
     game_region = find_maplestory_window()
-    threading.Thread(target=start_auction(game_region), daemon=True).start()
+    threading.Thread(target=start_auction, args=(game_region,), daemon=True).start()
+    keyboard.wait('esc')

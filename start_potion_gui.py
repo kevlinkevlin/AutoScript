@@ -47,7 +47,6 @@ class MonitorConfig:
     # Filtering (避免 OCR 垃圾值)
     total_min_hp: float = 50.0
     total_min_mp: float = 40.0
-    total_max: float = 28000.0
 
     # Capture pacing
     interval_sec: float = 0.30
@@ -81,18 +80,11 @@ def compute_roi(base_region: Tuple[int, int, int, int], cfg: MonitorConfig) -> T
     return (rx, ry, rw, rh)
 
 
-def capture_region_image(region: Tuple[int, int, int, int]):
-    """Capture any region on extended desktop (supports negative left/top on Windows)"""
-    return pyautogui.screenshot(region=region)
-
-
 def capture_and_ocr(reader, roi: Tuple[int, int, int, int], cfg: MonitorConfig):
-    shot = capture_region_image(roi)
-    img = cv2.cvtColor(np.array(shot), cv2.COLOR_RGB2BGR)
-
+    shot = pyautogui.screenshot(region=roi)
+    img = cv2.cvtColor(np.array(shot), cv2.COLOR_RGB2GRAY)
     resized = cv2.resize(img, None, fx=cfg.resize_fx, fy=cfg.resize_fy, interpolation=cv2.INTER_CUBIC)
     _, binary = cv2.threshold(resized, cfg.binary_thresh, 255, cv2.THRESH_BINARY)
-
     return reader.readtext(binary)
 
 
@@ -160,7 +152,7 @@ class OCRMonitorWorker(threading.Thread):
 
                 if hp is not None:
                     left, total, ratio, text, conf = hp
-                    if (ratio < self.cfg.hp_ratio and self.cfg.total_min_hp < total < self.cfg.total_max):
+                    if (ratio < self.cfg.hp_ratio and self.cfg.total_min_hp < total):
                         self._hp_alert_count += 1
                         hp_alert = True
                         keyboard.press_and_release(self.cfg.hp_key)
@@ -168,11 +160,11 @@ class OCRMonitorWorker(threading.Thread):
 
                 if mp is not None:
                     left, total, ratio, text, conf = mp
-                    if (ratio < self.cfg.mp_ratio and self.cfg.total_min_mp < total < self.cfg.total_max):
+                    if (ratio < self.cfg.mp_ratio and self.cfg.total_min_mp < total):
                         self._mp_alert_count += 1
                         mp_alert = True
 
-                        if self.cfg.use_super_potion == True:
+                        if self.cfg.use_super_potion:
                             keyboard.press_and_release(self.cfg.super_potion_key)
                         else:
                             keyboard.press_and_release(self.cfg.mp_key)
@@ -218,6 +210,7 @@ class MonitorApp:
         self.preview_running = False
         self._preview_after_id = None
         self._preview_imgtk = None
+        self._preview_scale: Optional[float] = None
 
         self._build_ui()
         self._poll_queue()
@@ -325,6 +318,7 @@ class MonitorApp:
         self.w_var.set(str(w))
         self.h_var.set(str(h))
         self.base_region = region
+        self._preview_scale = None  # invalidate cached scale
 
     def _apply_region(self):
         try:
@@ -394,6 +388,11 @@ class MonitorApp:
         start_x = start_y = 0
         rect_id = None
 
+        def canvas_to_virtual(cx1, cy1, cx2, cy2):
+            x1, y1 = min(cx1, cx2), min(cy1, cy2)
+            x2, y2 = max(cx1, cx2), max(cy1, cy2)
+            return int(x1 / scale) + v_left, int(y1 / scale) + v_top, int((x2 - x1) / scale), int((y2 - y1) / scale)
+
         def cancel(_event=None):
             overlay.destroy()
             self.root.deiconify()
@@ -408,36 +407,17 @@ class MonitorApp:
             rect_id = canvas.create_rectangle(start_x, start_y, start_x, start_y, outline="red", width=2)
 
         def on_drag(event):
-            nonlocal rect_id
             if rect_id is None:
                 return
             canvas.coords(rect_id, start_x, start_y, event.x, event.y)
-
-            x1 = min(start_x, event.x)
-            y1 = min(start_y, event.y)
-            x2 = max(start_x, event.x)
-            y2 = max(start_y, event.y)
-
-            vx1 = int(x1 / scale) + v_left
-            vy1 = int(y1 / scale) + v_top
-            vw = int((x2 - x1) / scale)
-            vh = int((y2 - y1) / scale)
-            canvas.itemconfig(info_text, text=f"x={vx1}, y={vy1}, w={vw}, h={vh}  (ESC 取消)")
+            vx, vy, vw, vh = canvas_to_virtual(start_x, start_y, event.x, event.y)
+            canvas.itemconfig(info_text, text=f"x={vx}, y={vy}, w={vw}, h={vh}  (ESC 取消)")
 
         def on_up(event):
-            x1 = min(start_x, event.x)
-            y1 = min(start_y, event.y)
-            x2 = max(start_x, event.x)
-            y2 = max(start_y, event.y)
-
-            vx1 = int(x1 / scale) + v_left
-            vy1 = int(y1 / scale) + v_top
-            vw = int((x2 - x1) / scale)
-            vh = int((y2 - y1) / scale)
-
+            vx, vy, vw, vh = canvas_to_virtual(start_x, start_y, event.x, event.y)
             if vw > 10 and vh > 10:
-                self._set_base_region((vx1, vy1, vw, vh))
-                self.status_lbl.config(text=f"狀態：已框選 base region={(vx1, vy1, vw, vh)}")
+                self._set_base_region((vx, vy, vw, vh))
+                self.status_lbl.config(text=f"狀態：已框選 base region={(vx, vy, vw, vh)}")
             cancel()
 
         overlay.bind("<Escape>", cancel)
@@ -485,13 +465,14 @@ class MonitorApp:
             return
 
         try:
-            # ✅ Preview 顯示「你選取的 base_region 畫面」
-            shot = capture_region_image(self.base_region)
+            shot = pyautogui.screenshot(region=self.base_region)
 
-            max_w, max_h = 580, 320
-            w, h = shot.size
-            s = min(max_w / max(w, 1), max_h / max(h, 1), 1.0)
+            if self._preview_scale is None:
+                w, h = shot.size
+                self._preview_scale = min(580 / max(w, 1), 320 / max(h, 1), 1.0)
+            s = self._preview_scale
             if s < 1.0:
+                w, h = shot.size
                 shot = shot.resize((int(w * s), int(h * s)))
 
             imgtk = ImageTk.PhotoImage(shot)

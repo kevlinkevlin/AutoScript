@@ -1,7 +1,8 @@
 import time
 import pyautogui
 import threading
-from find_boss import find_maplestory_window, detect_boss, detect_confirm
+from maplestory_define import find_maplestory_window
+from find_boss import detect_boss, detect_confirm
 
 change_channel_path = [
     [0.88, 0.97, 0.3, "點目錄"],
@@ -44,7 +45,7 @@ def click_loop():
     region = find_maplestory_window()
     while True:
         if not clicking:
-            print("wating.....")
+            print("waiting...")
             time.sleep(1)
             continue
 
