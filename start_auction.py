@@ -1,6 +1,7 @@
 import re
 import cv2
 import time
+
 import keyboard
 import easyocr
 import pyautogui
@@ -10,21 +11,22 @@ import threading
 from maplestory_define import find_maplestory_window
 
 clicking = False
+clicking_lock = threading.Lock()
 stop_event = threading.Event()
 original_pos = pyautogui.position()
 SINGLE_MODE, TOTAL_MODE = "Single", "Total"
 CLICK_SEARCH, CLICK_TOP_LEFT = "ClickSearch", "ClickTopLeft"
 
-TARGET_PRICE = 4800000
-MINIMUM_PRICE = 1
+TARGET_PRICE = 4500000
+MINIMUM_PRICE = 500
 LOOP_DELAY = 45
 NUMBER_IN_AUCTION = 7
-MODE = TOTAL_MODE        # SINGLE_MODE: 單價， TOTAL_MODE: 總價
-REFRESH_METHOD = CLICK_SEARCH  # CLICK_SEARCH: 點搜尋刷新， CLICK_TOP_LEFT: 點左上角刷新
-
+MIN_CONFIDENCE = 0.8
+MODE, REFRESH_METHOD = TOTAL_MODE, CLICK_SEARCH # SINGLE_MODE: 單價， TOTAL_MODE: 總價
+                                                # CLICK_SEARCH: 點搜尋刷新， CLICK_TOP_LEFT: 點左上角刷新
+# MODE, REFRESH_METHOD = SINGLE_MODE, CLICK_TOP_LEFT
 
 def start_auction(game_region):
-    global clicking, stop_event
     reader = easyocr.Reader(['ch_tra', 'en'], gpu=True)
     print("開始搶購!!!!!!!!!!!")
 
@@ -38,23 +40,31 @@ def start_auction(game_region):
     price_region = (x + int(ratio_x * w), y + int(ratio_y * h), int(ratio_w * w), int(ratio_h * h))
 
     while True:
-        if not clicking:
-            print("waiting...")
+        with clicking_lock:
+            is_clicking = clicking
+        if not is_clicking:
             time.sleep(1)
             continue
 
-        pyautogui.moveTo(game_region[0] + 10, game_region[1] + 10)
+        pyautogui.moveTo(game_region[0] + game_region[2] // 3, game_region[1] + game_region[3] * 0.3)
 
         if REFRESH_METHOD == CLICK_TOP_LEFT:
             refresh_auction(game_region)
         elif REFRESH_METHOD == CLICK_SEARCH:
             refresh_auction_click_search(game_region)
 
-        time.sleep(0.5)
+        time.sleep(0.6)
 
-        result = cv_capture(price_region, reader)
+        result = cv_capture(price_region, reader, save_debug_image=True)
+        check_time = time.time()
+        price_results = filter_price_results(result)
 
-        if (len(result) // 2) != NUMBER_IN_AUCTION:
+        while time.time() - check_time < 10.0 and len(price_results) != NUMBER_IN_AUCTION:
+            print("OCR 結果不完整，重新 OCR")
+            result = cv_capture(price_region, reader)
+            price_results = filter_price_results(result)
+
+        if len(price_results) != NUMBER_IN_AUCTION:
             print("找不到價錢，重新進入拍賣")
             target_x = game_region[0] + game_region[2] * 0.85
             target_y = game_region[1] + game_region[3] * 0.95
@@ -65,49 +75,76 @@ def start_auction(game_region):
             resume_click()
             continue
 
-        for ind, (box, text, conf) in enumerate(result):
+        item_height = price_region[3] / NUMBER_IN_AUCTION
+
+        for index, (box, text, conf) in enumerate(price_results):
             match = re.search(r'(\d{1,3}(?:,\d{3})+|\d+)', text)
-
             if match is None:
-                print(f"re.search 結果錯誤 {match}")
+                print(f"re.search 結果錯誤: {text!r}")
                 continue
-            if ind % 2 == 0:
-                value = int(match.group(1).replace(',', ''))
-                index = ind // 2
-                item_height = price_region[3] / 7
-                target_x = price_region[0]
-                target_y = price_region[1] + item_height * index + item_height / 2
-                print(f"第 {index + 1}/{NUMBER_IN_AUCTION} 項價錢是 {value}")
 
-                if value <= TARGET_PRICE:
-                    shutil.copyfile("auction.png", f"./image/buy_target_{value}_{time.strftime('%Y-%m-%d_%H-%M-%S')}.png")
+            # 防呆：match 前方緊鄰逗號，代表 OCR 漏掉開頭數字（截斷）
+            if match.start() > 0 and text[match.start() - 1] == ',':
+                print(f"[防呆] 數字前出現逗號，OCR 截斷，跳過: {text!r}")
+                continue
 
-                    if value <= MINIMUM_PRICE:
-                        print(f"低於保護價格 {MINIMUM_PRICE}，先不購買")
-                        continue
+            value = int(match.group(1).replace(',', ''))
+            target_x = price_region[0]
+            target_y = price_region[1] + item_height * index + item_height / 2
+            # print(f"第 {index + 1}/{NUMBER_IN_AUCTION} 項價錢是 {value}")
 
-                    start_click()
-                    # pyautogui.doubleClick(target_x, target_y)
-                    pyautogui.mouseDown(target_x, target_y)
-                    pyautogui.mouseUp()
-                    pyautogui.mouseDown(target_x, target_y)
-                    pyautogui.mouseUp()
-                    time.sleep(0.2)
+            if value <= TARGET_PRICE:
+                if value < MINIMUM_PRICE:
+                    print(f"低於保護價格 {MINIMUM_PRICE}，先不購買")
+                    continue
 
-                    if MODE == SINGLE_MODE:
-                        pyautogui.click(game_region[0] + game_region[2] * 0.46, game_region[1] + game_region[3] * 0.47)
+                shutil.copyfile(
+                    "auction.png", f"./image/{time.strftime('%Y-%m-%d_%H-%M-%S')}_buy_target_{value}.png")
 
-                    keyboard.press_and_release('enter')
-                    resume_click()
-                    break
+                start_click()
+                pyautogui.mouseDown(target_x, target_y)
+                pyautogui.mouseUp()
+                pyautogui.mouseDown(target_x, target_y)
+                pyautogui.mouseUp()
+                time.sleep(0.2)
+
+                if MODE == SINGLE_MODE:
+                    pyautogui.click(game_region[0] + game_region[2] * 0.46, game_region[1] + game_region[3] * 0.47)
+
+                keyboard.press_and_release('enter')
+                resume_click()
+                break
 
         print(f"暫停 {LOOP_DELAY} 秒")
         time.sleep(LOOP_DELAY)
 
 
+def filter_price_results(result):
+    """過濾掉萬行與低信心度，只保留純價格行，並依 Y 座標由上到下排序"""
+    price_results = []
+    for box, text, conf in result:
+        # print(text, conf)
+        if conf < MIN_CONFIDENCE:
+            continue
+        if '萬' in text or '(' in text or ')' in text:
+            continue
+        if re.search(r'[一-鿿㐀-䶿豈-﫿]', text):
+            print(f"[跳過] 含中文字，排除: {text!r}")
+            continue
+        # 防呆：開頭出現逗號代表 OCR 截斷了前置數字（例如 ,444,444 → 實為 1,444,444）
+        if re.match(r'^\s*,', text):
+            print(f"[防呆] 截斷結果（開頭逗號），排除: {text!r}")
+            continue
+        # print(text, conf)
+        price_results.append((box, text, conf))
+    price_results.sort(key=lambda r: r[0][0][1])
+    return price_results
+
+
 def toggle_clicking():
-    global clicking, stop_event
-    clicking = not clicking
+    global clicking
+    with clicking_lock:
+        clicking = not clicking
 
     if clicking:
         print("🟢 自動點擊開始")
@@ -128,7 +165,7 @@ def refresh_auction(game_region):
 def refresh_auction_click_search(game_region):
     x, y, w, h = game_region
     start_click()
-    pyautogui.click(x + int(0.25 * w), y + int(0.68 * h))
+    pyautogui.click(x + int(0.25 * w), y + int(0.8 * h))
     resume_click()
 
 
@@ -141,15 +178,32 @@ def resume_click():
     pyautogui.moveTo(original_pos)
 
 
-def cv_capture(region, reader):
+def cv_capture(region, reader, save_debug_image=False):
     screenshot = pyautogui.screenshot(region=region)
     img = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2GRAY)
-    resized = cv2.resize(img, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-    _, binary = cv2.threshold(resized, 150, 255, cv2.THRESH_BINARY)
 
-    # cv2.imwrite("auction.png",binary)
+    # 左右加 padding，避免首位數字被截掉（,444,444 問題的根源）
+    padded = cv2.copyMakeBorder(img, 8, 8, 30, 10, cv2.BORDER_CONSTANT, value=255)
 
-    return reader.readtext(binary)
+    # 4x 放大，比 3x 更利於小字辨識
+    resized = cv2.resize(padded, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+
+    # 銳化，強化數字邊緣
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharpened = cv2.filter2D(resized, -1, kernel)
+
+    # Otsu 自適應門檻，比固定 150 更能應對亮度變化
+    _, binary = cv2.threshold(sharpened, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # 膨脹補粗細筆劃（如 "1"），避免二值化後斷裂導致信心偏低
+    kernel_dilate = np.ones((2, 2), np.uint8)
+    binary = cv2.dilate(binary, kernel_dilate, iterations=1)
+
+    if save_debug_image:
+        cv2.imwrite("auction.png", binary)
+
+    # allowlist 限定只辨識數字與逗號，大幅降低誤讀率
+    return reader.readtext(binary, allowlist='0123456789,')
 
 
 keyboard.add_hotkey('F8', toggle_clicking)
