@@ -16,6 +16,9 @@ import mss  # multi-monitor virtual screen capture
 
 import keyboard
 
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
+
 # Optional: Windows beep
 try:
     import winsound
@@ -35,14 +38,14 @@ RATIO_PATTERN = re.compile(r"[\[\(]\s*(\d+)\s*/\s*(\d+)\s*[\]\)]")
 @dataclass
 class MonitorConfig:
     hp_key: str = "pagedown"
-    # hp_key: str = "pageup"
     mp_key: str = "pagedown"
+    # mp_key: str = "pageup"
     use_super_potion: bool = False
     super_potion_key: str = "end"
 
     # Thresholds (提示用，不做自動按鍵)
-    hp_ratio: float = 0.80
-    mp_ratio: float = 0.28
+    hp_ratio: float = 0.99
+    mp_ratio: float = 0.3
 
     # Filtering (避免 OCR 垃圾值)
     total_min_hp: float = 50.0
@@ -52,10 +55,10 @@ class MonitorConfig:
     interval_sec: float = 0.30
 
     # ROI relative to selected region (x, y, w, h)
-    roi_ratio_x: float = 0.0 # 0.266
-    roi_ratio_y: float = 0.0 # 0.934
-    roi_ratio_w: float = 1.0 # 0.220
-    roi_ratio_h: float = 1.0 # 0.029
+    roi_ratio_x: float = 0.0  # 0.266
+    roi_ratio_y: float = 0.0  # 0.934
+    roi_ratio_w: float = 1.0  # 0.220
+    roi_ratio_h: float = 1.0  # 0.029
 
     # OCR
     languages: Tuple[str, ...] = ("ch_tra", "en")
@@ -192,11 +195,36 @@ class OCRMonitorWorker(threading.Thread):
         self.status_q.put({"type": "info", "msg": "已停止 OCR 監看"})
 
 
+class ScheduledKeyWorker(threading.Thread):
+    def __init__(self, entries: list, stop_event: threading.Event):
+        super().__init__(daemon=True)
+        self.entries = entries  # list of {"key": str, "interval": float, "enabled": bool}
+        self.stop_event = stop_event
+
+    def run(self):
+        now = time.time()
+        next_press = {i: now + e["interval"] for i, e in enumerate(self.entries)}
+        while not self.stop_event.is_set():
+            now = time.time()
+            pressed_any = False
+            for i, e in enumerate(self.entries):
+                if e["enabled"] and now >= next_press[i]:
+                    if pressed_any:
+                        time.sleep(0.8)  # gap between consecutive keys
+                    keyboard.press(e["key"])
+                    time.sleep(0.1)
+                    keyboard.release(e["key"])
+                    next_press[i] = now + e["interval"]
+                    pressed_any = True
+            if not pressed_any:
+                time.sleep(0.05)
+
+
 class MonitorApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Region Preview (Selected) + OCR ROI")
-        self.root.geometry("620x560")
+        self.root.geometry("620x700")
         self.root.attributes("-topmost", True)
 
         self.cfg = MonitorConfig()
@@ -205,6 +233,11 @@ class MonitorApp:
 
         # Selected base region (what you manually box)
         self.base_region: Optional[Tuple[int, int, int, int]] = None
+
+        # Scheduled key state
+        self._sched_rows: list = []
+        self._sched_stop_event: Optional[threading.Event] = None
+        self._sched_worker: Optional[ScheduledKeyWorker] = None
 
         # Preview state
         self.preview_running = False
@@ -262,6 +295,28 @@ class MonitorApp:
         ttk.Label(th_frame, text="MP <").grid(row=0, column=2, padx=8, pady=6, sticky="w")
         ttk.Entry(th_frame, textvariable=self.mp_th_var, width=10).grid(row=0, column=3, padx=(0, 18), pady=6)
 
+        sched_frame = ttk.LabelFrame(self.root, text="定時按鍵")
+        sched_frame.pack(fill="x", **pad)
+
+        sched_top = ttk.Frame(sched_frame)
+        sched_top.pack(fill="x", padx=4, pady=(4, 2))
+        ttk.Label(sched_top, text="按鍵", width=8).pack(side="left")
+        ttk.Label(sched_top, text="間隔(秒)", width=9).pack(side="left")
+        ttk.Label(sched_top, text="啟用").pack(side="left", padx=(6, 0))
+        ttk.Button(sched_top, text="+ 加入", command=self._add_sched_row).pack(side="right", padx=4)
+
+        self._sched_rows_frame = ttk.Frame(sched_frame)
+        self._sched_rows_frame.pack(fill="x", padx=4, pady=(0, 4))
+
+        sched_ctrl = ttk.Frame(sched_frame)
+        sched_ctrl.pack(fill="x", padx=4, pady=(0, 6))
+        self.sched_start_btn = ttk.Button(sched_ctrl, text="開始定時", command=self._start_sched)
+        self.sched_start_btn.pack(side="left")
+        self.sched_stop_btn = ttk.Button(sched_ctrl, text="停止定時", command=self._stop_sched, state="disabled")
+        self.sched_stop_btn.pack(side="left", padx=(8, 0))
+        self.sched_status_lbl = ttk.Label(sched_ctrl, text="", foreground="gray")
+        self.sched_status_lbl.pack(side="left", padx=(12, 0))
+
         ctrl = ttk.Frame(self.root)
         ctrl.pack(fill="x", **pad)
 
@@ -294,6 +349,66 @@ class MonitorApp:
 
         if not find_maplestory_window:
             self.auto_btn.config(state="disabled")
+
+    def _add_sched_row(self):
+        key_var = tk.StringVar(value="")
+        interval_var = tk.StringVar(value="60")
+        enabled_var = tk.BooleanVar(value=True)
+
+        row_frame = ttk.Frame(self._sched_rows_frame)
+        row_frame.pack(fill="x", pady=1)
+
+        ttk.Entry(row_frame, textvariable=key_var, width=8).pack(side="left")
+        ttk.Entry(row_frame, textvariable=interval_var, width=8).pack(side="left", padx=(4, 0))
+        ttk.Checkbutton(row_frame, variable=enabled_var).pack(side="left", padx=(6, 0))
+
+        row_data = {
+            "key_var": key_var,
+            "interval_var": interval_var,
+            "enabled_var": enabled_var,
+            "frame": row_frame,
+        }
+        ttk.Button(row_frame, text="刪除", command=lambda: self._del_sched_row(row_data)).pack(side="left", padx=(8, 0))
+        self._sched_rows.append(row_data)
+
+    def _del_sched_row(self, row_data: dict):
+        row_data["frame"].destroy()
+        self._sched_rows.remove(row_data)
+
+    def _get_sched_entries(self) -> list:
+        entries = []
+        for row in self._sched_rows:
+            key = row["key_var"].get().strip()
+            if not key:
+                continue
+            try:
+                interval = max(0.1, float(row["interval_var"].get()))
+            except ValueError:
+                interval = 60.0
+            entries.append({"key": key, "interval": interval, "enabled": bool(row["enabled_var"].get())})
+        return entries
+
+    def _start_sched(self):
+        if self._sched_worker and self._sched_worker.is_alive():
+            return
+        entries = self._get_sched_entries()
+        if not entries:
+            self.sched_status_lbl.config(text="請先加入按鍵", foreground="red")
+            return
+        self._sched_stop_event = threading.Event()
+        self._sched_worker = ScheduledKeyWorker(entries, self._sched_stop_event)
+        self._sched_worker.start()
+        self.sched_start_btn.config(state="disabled")
+        self.sched_stop_btn.config(state="normal")
+        keys_str = ", ".join(e["key"] for e in entries)
+        self.sched_status_lbl.config(text=f"執行中：{keys_str}", foreground="green")
+
+    def _stop_sched(self):
+        if self._sched_stop_event:
+            self._sched_stop_event.set()
+        self.sched_start_btn.config(state="normal")
+        self.sched_stop_btn.config(state="disabled")
+        self.sched_status_lbl.config(text="已停止", foreground="gray")
 
     def _toggle_topmost(self):
         self.root.attributes("-topmost", bool(self.topmost_var.get()))
@@ -578,6 +693,8 @@ class MonitorApp:
             self._stop_preview()
             if self.worker:
                 self.worker.stop()
+            if self._sched_stop_event:
+                self._sched_stop_event.set()
         finally:
             self.root.destroy()
 

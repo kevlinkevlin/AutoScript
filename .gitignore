@@ -3,6 +3,7 @@ node_modules/
 
 # Ignore logs
 *.log
+logs/
 
 # Ignore environment files
 .env
@@ -15,7 +16,23 @@ Thumbs.db
 dist/
 build/
 image/
+*.spec
 
 # Ignore IDE/editor folders
 .vscode/
 .idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime outputs
+ocr_debug_image/
+auction.png
+monster_templates/
+
+# Debug generated outputs
+debug/ocr_diagnostic_report.txt
+debug/ocr_diagnostic_annotated/
+debug/ocr_diagnostic_crops/

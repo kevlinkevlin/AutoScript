@@ -1,10 +1,15 @@
 import re
+import os
+import sys
 import cv2
 import time
 import keyboard
 import easyocr
 import pyautogui
 import numpy as np
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
+
 from maplestory_define import find_maplestory_window
 
 def auto_use_potion(region):

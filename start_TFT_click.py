@@ -1,7 +1,12 @@
+import os
+import sys
 import pyautogui
 import keyboard
 import threading
 import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib'))
+
 from maplestory_define import find_TFT_window
 
 relative_pos = [
