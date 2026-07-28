@@ -56,6 +56,7 @@ class AuctionWorker(threading.Thread):
         self.status_q = status_q
         self.stop_event = threading.Event()
         self._original_pos = pyautogui.position()
+        self._consecutive_fail_count = 0
 
     def stop(self):
         self.stop_event.set()
@@ -122,6 +123,12 @@ class AuctionWorker(threading.Thread):
                 break
 
             if len(price_results) < self.cfg.number_in_auction:
+                self._consecutive_fail_count += 1
+                if self._consecutive_fail_count >= 5:
+                    self._log("連續 5 次搜尋結果有問題，自動停止搶購")
+                    self.stop_event.set()
+                    break
+
                 self._log("找不到價錢，重新進入拍賣")
                 target_x = self.game_region[0] + self.game_region[2] * 0.85
                 target_y = self.game_region[1] + self.game_region[3] * 0.95
@@ -132,6 +139,7 @@ class AuctionWorker(threading.Thread):
                 self._resume_click()
                 continue
 
+            self._consecutive_fail_count = 0
             bought = False
             for index, (box, text, conf) in enumerate(price_results):
                 value = self._reconstruct_price(text)
@@ -615,7 +623,7 @@ class AuctionApp:
         self.min_price_var = tk.StringVar(value="500")
         self.loop_delay_var = tk.StringVar(value="40")
         self.num_in_auction_var = tk.StringVar(value="7")
-        self.min_conf_var = tk.StringVar(value="0.5")
+        self.min_conf_var = tk.StringVar(value="0.3")
 
         left_fields = [
             ("目標價格", self.target_price_var),
