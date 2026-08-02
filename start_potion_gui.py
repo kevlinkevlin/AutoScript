@@ -5,6 +5,17 @@ import queue
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+# 修正 Windows 多螢幕、不同縮放比例下 mss/GDI 截圖錯位或只抓到一半的問題，
+# 必須在建立任何視窗、截圖之前盡早呼叫（詳見 track_triangle.py 開頭說明）。
+try:
+    import ctypes
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
 import cv2
 import numpy as np
 import pyautogui
@@ -30,6 +41,8 @@ try:
     from maplestory_define import find_maplestory_window  # noqa
 except Exception:
     find_maplestory_window = None
+
+import track_triangle as tt  # 白色圖形偵測（滑鼠自動跟隨用）
 
 
 RATIO_PATTERN = re.compile(r"[\[\(]\s*(\d+)\s*/\s*(\d+)\s*[\]\)]")
@@ -210,7 +223,7 @@ class ScheduledKeyWorker(threading.Thread):
             for i, e in enumerate(self.entries):
                 if e["enabled"] and now >= next_press[i]:
                     if pressed_any:
-                        time.sleep(0.8)  # gap between consecutive keys
+                        time.sleep(1.0)  # gap between consecutive keys
                     keyboard.press(e["key"])
                     time.sleep(0.1)
                     keyboard.release(e["key"])
@@ -218,6 +231,50 @@ class ScheduledKeyWorker(threading.Thread):
                     pressed_any = True
             if not pressed_any:
                 time.sleep(0.05)
+
+
+class TriangleTrackWorker(threading.Thread):
+    """持續擷取指定範圍、偵測白色圖形位置，並讓滑鼠即時跟著移動過去"""
+
+    def __init__(self, region: Tuple[int, int, int, int], status_q: "queue.Queue[dict]"):
+        super().__init__(daemon=True)
+        self.region = region
+        self.status_q = status_q
+        self.stop_event = threading.Event()
+
+    def stop(self):
+        self.stop_event.set()
+
+    def run(self):
+        prev_center = None
+        lost_frames = 0
+
+        while not self.stop_event.is_set():
+            t0 = time.time()
+            try:
+                frame = tt.screenshot_mss(self.region)
+                candidates = tt.find_candidates(frame, self.region)
+                target = tt.pick_target(candidates, prev_center, frame.shape)
+
+                if target:
+                    cx, cy, area, _c = target
+                    prev_center = (cx, cy)
+                    lost_frames = 0
+                    sx, sy = self.region[0] + cx, self.region[1] + cy
+                    pyautogui.moveTo(sx, sy, _pause=False)
+                    self.status_q.put({"type": "triangle_tick", "pos": (sx, sy), "area": area})
+                else:
+                    lost_frames += 1
+                    if lost_frames >= tt.LOST_GRACE_FRAMES:
+                        prev_center = None
+                    self.status_q.put({"type": "triangle_tick", "pos": None})
+            except Exception as e:
+                self.status_q.put({"type": "error", "msg": f"三角形追蹤錯誤：{e}"})
+
+            elapsed = time.time() - t0
+            time.sleep(max(0.0, tt.CAPTURE_INTERVAL - elapsed))
+
+        self.status_q.put({"type": "info", "msg": "已停止三角形追蹤"})
 
 
 class MonitorApp:
@@ -239,11 +296,25 @@ class MonitorApp:
         self._sched_stop_event: Optional[threading.Event] = None
         self._sched_worker: Optional[ScheduledKeyWorker] = None
 
+        # Triangle tracker state
+        self.triangle_region: Optional[Tuple[int, int, int, int]] = None
+        self.triangle_worker: Optional[TriangleTrackWorker] = None
+        self._tri_hotkey_registered: Optional[str] = None
+        self._tri_auto_hotkey_registered: Optional[str] = None
+
         # Preview state
         self.preview_running = False
         self._preview_after_id = None
         self._preview_imgtk = None
         self._preview_scale: Optional[float] = None
+
+        # Triangle tracker debug preview state
+        self.tri_preview_running = False
+        self._tri_preview_after_id = None
+        self._tri_preview_imgtk = None
+        self._tri_preview_scale: Optional[float] = None
+        self._tri_preview_prev_center: Optional[Tuple[int, int]] = None
+        self._tri_preview_lost_frames = 0
 
         self._build_ui()
         self._poll_queue()
@@ -316,6 +387,55 @@ class MonitorApp:
         self.sched_stop_btn.pack(side="left", padx=(8, 0))
         self.sched_status_lbl = ttk.Label(sched_ctrl, text="", foreground="gray")
         self.sched_status_lbl.pack(side="left", padx=(12, 0))
+
+        tri_frame = ttk.LabelFrame(self.root, text="三角形追蹤（快捷鍵切換，滑鼠自動跟隨偵測位置）")
+        tri_frame.pack(fill="x", **pad)
+
+        self.tri_x_var = tk.StringVar(value="0")
+        self.tri_y_var = tk.StringVar(value="0")
+        self.tri_w_var = tk.StringVar(value="0")
+        self.tri_h_var = tk.StringVar(value="0")
+
+        for i, (lbl, var) in enumerate(
+            [("x", self.tri_x_var), ("y", self.tri_y_var), ("w", self.tri_w_var), ("h", self.tri_h_var)]
+        ):
+            ttk.Label(tri_frame, text=lbl).grid(row=0, column=i * 2, sticky="w", padx=(8, 2), pady=6)
+            ttk.Entry(tri_frame, textvariable=var, width=10).grid(row=0, column=i * 2 + 1, padx=(0, 8), pady=6)
+
+        tri_btns = ttk.Frame(tri_frame)
+        tri_btns.grid(row=1, column=0, columnspan=8, sticky="w", padx=8, pady=(0, 8))
+        ttk.Button(tri_btns, text="自動偵測範圍", command=self._auto_detect_triangle_region).pack(side="left")
+        ttk.Button(tri_btns, text="手動框選範圍", command=self._select_triangle_region).pack(side="left", padx=(8, 0))
+        ttk.Button(tri_btns, text="套用範圍", command=self._apply_triangle_region).pack(side="left", padx=(8, 0))
+        self.tri_preview_btn = ttk.Button(tri_btns, text="Preview 偵測畫面", command=self._toggle_tri_preview)
+        self.tri_preview_btn.pack(side="left", padx=(8, 0))
+
+        tri_hotkey_row = ttk.Frame(tri_frame)
+        tri_hotkey_row.grid(row=2, column=0, columnspan=8, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(tri_hotkey_row, text="追蹤快捷鍵").pack(side="left")
+        self.tri_hotkey_var = tk.StringVar(value="f9")
+        ttk.Entry(tri_hotkey_row, textvariable=self.tri_hotkey_var, width=10).pack(side="left", padx=(4, 8))
+        ttk.Button(tri_hotkey_row, text="套用快捷鍵", command=self._apply_triangle_hotkey).pack(side="left")
+        self.tri_hotkey_status_lbl = ttk.Label(tri_hotkey_row, text="尚未綁定", foreground="gray")
+        self.tri_hotkey_status_lbl.pack(side="left", padx=(12, 0))
+
+        tri_auto_hotkey_row = ttk.Frame(tri_frame)
+        tri_auto_hotkey_row.grid(row=3, column=0, columnspan=8, sticky="w", padx=8, pady=(0, 8))
+        ttk.Label(tri_auto_hotkey_row, text="自動偵測快捷鍵").pack(side="left")
+        self.tri_auto_hotkey_var = tk.StringVar(value="f8")
+        ttk.Entry(tri_auto_hotkey_row, textvariable=self.tri_auto_hotkey_var, width=10).pack(side="left", padx=(4, 8))
+        ttk.Button(tri_auto_hotkey_row, text="套用快捷鍵", command=self._apply_triangle_auto_detect_hotkey).pack(side="left")
+        self.tri_auto_hotkey_status_lbl = ttk.Label(tri_auto_hotkey_row, text="尚未綁定", foreground="gray")
+        self.tri_auto_hotkey_status_lbl.pack(side="left", padx=(12, 0))
+
+        self.tri_status_lbl = ttk.Label(tri_frame, text="狀態：待機（按快捷鍵開始／再按一次停止）", foreground="gray")
+        self.tri_status_lbl.grid(row=4, column=0, columnspan=8, sticky="w", padx=8, pady=(0, 8))
+
+        tri_preview = ttk.LabelFrame(tri_frame, text="Preview = 三角形追蹤範圍（橘色框=候選，紅色十字=判斷位置）")
+        tri_preview.grid(row=5, column=0, columnspan=8, sticky="we", padx=8, pady=(0, 8))
+
+        self.tri_preview_lbl = ttk.Label(tri_preview, text="(按「Preview 偵測畫面」顯示即時偵測結果)")
+        self.tri_preview_lbl.pack(padx=6, pady=6)
 
         ctrl = ttk.Frame(self.root)
         ctrl.pack(fill="x", **pad)
@@ -451,7 +571,12 @@ class MonitorApp:
     # --------------------
     # 多螢幕：virtual screen 框選（支援負座標/跨螢幕）
     # --------------------
-    def _select_region_virtual_screen(self):
+    def _select_region_virtual_screen(self, on_selected=None):
+        if on_selected is None:
+            def on_selected(region):
+                self._set_base_region(region)
+                self.status_lbl.config(text=f"狀態：已框選 base region={region}")
+
         was_preview = self.preview_running
         if was_preview:
             self._stop_preview()
@@ -531,8 +656,7 @@ class MonitorApp:
         def on_up(event):
             vx, vy, vw, vh = canvas_to_virtual(start_x, start_y, event.x, event.y)
             if vw > 10 and vh > 10:
-                self._set_base_region((vx, vy, vw, vh))
-                self.status_lbl.config(text=f"狀態：已框選 base region={(vx, vy, vw, vh)}")
+                on_selected((vx, vy, vw, vh))
             cancel()
 
         overlay.bind("<Escape>", cancel)
@@ -543,6 +667,188 @@ class MonitorApp:
         overlay.update_idletasks()
         overlay.geometry("+80+60")
         overlay.mainloop()
+
+    # --------------------
+    # 三角形追蹤：範圍設定 + 快捷鍵切換
+    # --------------------
+    def _select_triangle_region(self):
+        def on_selected(region):
+            self._set_triangle_region(region)
+            self.status_lbl.config(text=f"狀態：已框選三角形追蹤範圍={region}")
+
+        self._select_region_virtual_screen(on_selected)
+
+    def _auto_detect_triangle_region(self):
+        try:
+            region = tt.auto_detect_region()
+        except Exception as e:
+            messagebox.showerror("錯誤", f"自動偵測範圍失敗：{e}")
+            return
+
+        self._set_triangle_region(region)
+        self.status_lbl.config(text=f"狀態：已自動偵測三角形追蹤範圍={region}")
+
+    def _set_triangle_region(self, region: Tuple[int, int, int, int]):
+        x, y, w, h = region
+        self.tri_x_var.set(str(x))
+        self.tri_y_var.set(str(y))
+        self.tri_w_var.set(str(w))
+        self.tri_h_var.set(str(h))
+        self.triangle_region = region
+        self._tri_preview_scale = None  # invalidate cached scale
+
+    def _apply_triangle_region(self):
+        try:
+            x = int(self.tri_x_var.get())
+            y = int(self.tri_y_var.get())
+            w = int(self.tri_w_var.get())
+            h = int(self.tri_h_var.get())
+            if w <= 0 or h <= 0:
+                raise ValueError("w/h 必須 > 0")
+            self.triangle_region = (x, y, w, h)
+            self._tri_preview_scale = None  # invalidate cached scale
+            self.status_lbl.config(text=f"狀態：已套用三角形追蹤範圍={self.triangle_region}")
+        except Exception as e:
+            messagebox.showerror("錯誤", f"三角形追蹤範圍格式錯誤：{e}")
+
+    def _apply_triangle_hotkey(self):
+        key = self.tri_hotkey_var.get().strip()
+        if not key:
+            messagebox.showerror("錯誤", "請輸入快捷鍵")
+            return
+
+        if self._tri_hotkey_registered:
+            try:
+                keyboard.remove_hotkey(self._tri_hotkey_registered)
+            except Exception:
+                pass
+            self._tri_hotkey_registered = None
+
+        try:
+            keyboard.add_hotkey(key, lambda: self.root.after(0, self._toggle_triangle_track))
+            self._tri_hotkey_registered = key
+            self.tri_hotkey_status_lbl.config(text=f"已綁定：{key}", foreground="green")
+        except Exception as e:
+            messagebox.showerror("錯誤", f"註冊快捷鍵失敗：{e}")
+
+    def _apply_triangle_auto_detect_hotkey(self):
+        key = self.tri_auto_hotkey_var.get().strip()
+        if not key:
+            messagebox.showerror("錯誤", "請輸入快捷鍵")
+            return
+
+        if self._tri_auto_hotkey_registered:
+            try:
+                keyboard.remove_hotkey(self._tri_auto_hotkey_registered)
+            except Exception:
+                pass
+            self._tri_auto_hotkey_registered = None
+
+        try:
+            keyboard.add_hotkey(key, lambda: self.root.after(0, self._auto_detect_triangle_region))
+            self._tri_auto_hotkey_registered = key
+            self.tri_auto_hotkey_status_lbl.config(text=f"已綁定：{key}", foreground="green")
+        except Exception as e:
+            messagebox.showerror("錯誤", f"註冊快捷鍵失敗：{e}")
+
+    def _toggle_triangle_track(self):
+        if self.triangle_worker and self.triangle_worker.is_alive():
+            self._stop_triangle_track()
+        else:
+            self._start_triangle_track()
+
+    def _start_triangle_track(self):
+        if self.triangle_worker and self.triangle_worker.is_alive():
+            return
+
+        if not self.triangle_region:
+            self._apply_triangle_region()
+            if not self.triangle_region:
+                return
+
+        self.triangle_worker = TriangleTrackWorker(self.triangle_region, self.status_q)
+        self.triangle_worker.start()
+        self.tri_status_lbl.config(text="狀態：三角形追蹤中...（再按一次快捷鍵停止）", foreground="green")
+
+    def _stop_triangle_track(self):
+        if self.triangle_worker:
+            self.triangle_worker.stop()
+        self.tri_status_lbl.config(text="狀態：已送出停止追蹤指令", foreground="gray")
+
+    # --------------------
+    # Preview = 三角形追蹤範圍（含偵測結果，debug 用）
+    # --------------------
+    def _toggle_tri_preview(self):
+        if self.tri_preview_running:
+            self._stop_tri_preview()
+        else:
+            self._start_tri_preview()
+
+    def _start_tri_preview(self):
+        if not self.triangle_region:
+            self._apply_triangle_region()
+            if not self.triangle_region:
+                return
+
+        self.tri_preview_running = True
+        self._tri_preview_prev_center = None
+        self._tri_preview_lost_frames = 0
+        self.tri_preview_btn.config(text="Stop Preview")
+        self._tri_preview_tick()
+
+    def _stop_tri_preview(self):
+        self.tri_preview_running = False
+        self.tri_preview_btn.config(text="Preview 偵測畫面")
+        if self._tri_preview_after_id is not None:
+            try:
+                self.root.after_cancel(self._tri_preview_after_id)
+            except Exception:
+                pass
+            self._tri_preview_after_id = None
+
+    def _tri_preview_tick(self):
+        if not self.tri_preview_running:
+            return
+
+        try:
+            frame = tt.screenshot_mss(self.triangle_region)
+            candidates = tt.find_candidates(frame, self.triangle_region)
+            target = tt.pick_target(candidates, self._tri_preview_prev_center, frame.shape)
+
+            vis = frame.copy()
+            for cx, cy, area, c in candidates:
+                cv2.drawContours(vis, [c], -1, (0, 200, 255), 1)
+
+            if target:
+                cx, cy, area, c = target
+                self._tri_preview_prev_center = (cx, cy)
+                self._tri_preview_lost_frames = 0
+                tt.draw_crosshair(vis, cx, cy)
+                cv2.putText(vis, f"({cx},{cy})", (cx + 12, cy - 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            else:
+                self._tri_preview_lost_frames += 1
+                if self._tri_preview_lost_frames >= tt.LOST_GRACE_FRAMES:
+                    self._tri_preview_prev_center = None
+
+            rgb = cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(rgb)
+
+            if self._tri_preview_scale is None:
+                w, h = img.size
+                self._tri_preview_scale = min(700 / max(w, 1), 420 / max(h, 1), 1.0)
+            s = self._tri_preview_scale
+            if s < 1.0:
+                w, h = img.size
+                img = img.resize((int(w * s), int(h * s)))
+
+            imgtk = ImageTk.PhotoImage(img)
+            self._tri_preview_imgtk = imgtk
+            self.tri_preview_lbl.configure(image=imgtk, text="")
+        except Exception as e:
+            self.tri_preview_lbl.configure(image="", text=f"Preview 失敗：{e}")
+
+        self._tri_preview_after_id = self.root.after(self.cfg.preview_interval_ms, self._tri_preview_tick)
 
     # --------------------
     # Preview = Selected (base) region
@@ -660,6 +966,13 @@ class MonitorApp:
         if mtype == "error":
             self.status_lbl.config(text=f"狀態：錯誤 - {msg.get('msg')}")
             return
+        if mtype == "triangle_tick":
+            pos = msg.get("pos")
+            if pos:
+                self.tri_status_lbl.config(text=f"狀態：三角形追蹤中  座標={pos}", foreground="green")
+            else:
+                self.tri_status_lbl.config(text="狀態：三角形追蹤中  （目前未偵測到）", foreground="orange")
+            return
         if mtype != "tick":
             return
 
@@ -691,10 +1004,23 @@ class MonitorApp:
     def _on_close(self):
         try:
             self._stop_preview()
+            self._stop_tri_preview()
             if self.worker:
                 self.worker.stop()
             if self._sched_stop_event:
                 self._sched_stop_event.set()
+            if self.triangle_worker:
+                self.triangle_worker.stop()
+            if self._tri_hotkey_registered:
+                try:
+                    keyboard.remove_hotkey(self._tri_hotkey_registered)
+                except Exception:
+                    pass
+            if self._tri_auto_hotkey_registered:
+                try:
+                    keyboard.remove_hotkey(self._tri_auto_hotkey_registered)
+                except Exception:
+                    pass
         finally:
             self.root.destroy()
 
